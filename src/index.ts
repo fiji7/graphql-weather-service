@@ -1,219 +1,31 @@
 import { ApolloServer } from '@apollo/server';
-import { startStandaloneServer } from '@apollo/server/standalone';
+import { expressMiddleware } from '@apollo/server/express4';
+import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHttpServer';
 import { RESTDataSource } from '@apollo/datasource-rest';
 import { makeExecutableSchema } from 'graphql-tools';
-import jwt from 'jsonwebtoken';
 import { GraphQLError } from 'graphql';
-import { PubSub } from 'graphql-subscriptions';
+import { WebSocketServer } from 'ws';
+import { useServer } from 'graphql-ws/lib/use/ws';
+import express from 'express';
+import { createServer } from 'http';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import 'dotenv/config'
+import { typeDefs } from './schema.js';
+import { resolvers } from './resolvers.js';
+import { users } from './fakeDb.js';
+import jwt from 'jsonwebtoken';
 
-const pubsub = new PubSub();
 
-//fake db
-const users = [
-  { id: 1, username: 'user1', password: 'password1' },
-  { id: 2, username: 'user2', password: 'password2' }
-];
-//TODO: shoudl be added to the env file
-const SECRET_KEY = 'secret_key';
+const PORT = 4000;
 
 class WeatherAPI extends RESTDataSource {
   override baseURL = 'http://api.weatherapi.com/';
 
   async getWeather() {
-    //TODO: shoudl be added to the env file
-    const data = await this.get(`v1/forecast.json?key=c4c936115a054c46a52144738242202&q=London&days=2&aqi=no&alerts=no`);
+    const data = await this.get(`v1/forecast.json?key=${process.env.WEATHER_API_KEY}&q=London&days=2&aqi=no&alerts=no`);
     return data
-  }
-
-}
-
-const typeDefs = `#graphql
-  # Comments in GraphQL strings (such as this one) start with the hash (#) symbol.
-  type Forecast {
-    forecastday: [ForecastDay]
-  }
-  
-  type ForecastDay {
-    date: String
-    date_epoch: Int
-    day: ForecastDayDetails
-    astro: ForecastAstroDetails
-    hour: [HourlyWeather]
-  }
-  
-  type ForecastDayDetails {
-    maxtemp_c: Float
-    maxtemp_f: Float
-    mintemp_c: Float
-    mintemp_f: Float
-    avgtemp_c: Float
-    avgtemp_f: Float
-    maxwind_mph: Float
-    maxwind_kph: Float
-    totalprecip_mm: Float
-    totalprecip_in: Float
-    avgvis_km: Float
-    avgvis_miles: Float
-    avghumidity: Int
-    daily_will_it_rain: Int
-    daily_chance_of_rain: String
-    daily_will_it_snow: Int
-    daily_chance_of_snow: String
-    condition: WeatherCondition
-  }
-  
-  type ForecastAstroDetails {
-    sunrise: String
-    sunset: String
-    moonrise: String
-    moonset: String
-  }
-  
-  type HourlyWeather {
-    time_epoch: Int
-    time: String
-    temp_c: Float
-    temp_f: Float
-    is_day: Int
-    condition: WeatherCondition
-    wind_mph: Float
-    wind_kph: Float
-    wind_degree: Int
-    wind_dir: String
-    pressure_mb: Float
-    pressure_in: Float
-    precip_mm: Float
-    precip_in: Float
-    snow_cm: Float
-    humidity: Int
-    cloud: Int
-    feelslike_c: Float
-    feelslike_f: Float
-    windchill_c: Float
-    windchill_f: Float
-    heatindex_c: Float
-    heatindex_f: Float
-    dewpoint_c: Float
-    dewpoint_f: Float
-    will_it_rain: Int
-    chance_of_rain: Int
-    will_it_snow: Int
-    chance_of_snow: Int
-    vis_km: Float
-    vis_miles: Float
-    gust_mph: Float
-    gust_kph: Float
-    uv: Float
-    short_rad: Float
-    diff_rad: Float
-  }
-  
-  type Weather {
-    location: Location
-    current: CurrentWeather
-    forecast: Forecast
-  }
-  
-  type Location {
-    name: String
-    region: String
-    country: String
-    lat: Float
-    lon: Float
-    tz_id: String
-    localtime_epoch: Int
-    localtime: String
-  }
-  
-  type CurrentWeather {
-    last_updated_epoch: Int
-    last_updated: String
-    temp_c: Float
-    temp_f: Float
-    is_day: Int
-    wind_mph: Float
-    wind_kph: Float
-    wind_degree: Int
-    wind_dir: String
-    pressure_mb: Float
-    pressure_in: Float
-    precip_mm: Float
-    precip_in: Float
-    humidity: Int
-    cloud: Int
-    feelslike_c: Float
-    feelslike_f: Float
-    vis_km: Float
-    vis_miles: Float
-    uv: Int
-    gust_mph: Float
-    gust_kph: Float
-  }
-  
-  type WeatherCondition {
-    text: String
-    icon: String
-    code: Int
-  }
-  
-  type Query {
-    weather: Weather
-  }  
-  type User {
-    id: ID!
-    username: String!
-  }
-
-  type AuthPayload {
-    token: String!
-    user: User!
-  }
-
-  type Mutation {
-    signup(username: String!, password: String!): AuthPayload
-    login(username: String!, password: String!): AuthPayload
-  }
-
-  type Subscription {
-    userAdded: User
-  }
-`;
-
-const resolvers = {
-  Query: {
-    weather: async (_, { id }, { dataSources, user }) => {
-      if (!user) {
-        throw new GraphQLError('Unauthorized');
-      }
-      return await dataSources.weatherAPI.getWeather();
-    },
-  },
-  Mutation: {
-    signup: (_, { username, password }) => {
-      const user = { id: users.length + 1, username, password };
-      users.push(user);
-
-      const token = jwt.sign({ userId: user.id }, SECRET_KEY);
-      pubsub.publish('userAdded', { userAdded: user });
-      return { token, user };
-    },
-    login: (_, { username, password }) => {
-      const user = users.find(user => user.username === username && user.password === password);
-
-      if (!user) {
-        throw new Error('Invalid username or password');
-      }
-
-      const token = jwt.sign({ userId: user.id }, SECRET_KEY);
-
-      return { token, user };
-    }
-  },
-  Subscription: {
-    userAdded: {
-      subscribe: () => pubsub.asyncIterator(['userAdded'])
-    }
-  }
+  };
 };
 
 
@@ -222,24 +34,52 @@ const schema = makeExecutableSchema({
   resolvers,
 });
 
+const app = express();
+const httpServer = createServer(app);
 
+// Creating the WebSocket server
+const wsServer = new WebSocketServer({
+  // This is the `httpServer` we created in a previous step.
+  server: httpServer,
+  // Pass a different path here if app.use
+  // serves expressMiddleware at a different path
+  path: '/graphql',
+});
+
+// Hand in the schema we just created and have the
+// WebSocketServer start listening.
+const serverCleanup = useServer({ schema }, wsServer);
 
 
 const server = new ApolloServer({
-  schema
+  schema,
+  plugins: [
+    // Proper shutdown for the HTTP server.
+    ApolloServerPluginDrainHttpServer({ httpServer }),
+
+    // Proper shutdown for the WebSocket server.
+    {
+      async serverWillStart() {
+        return {
+          async drainServer() {
+            await serverCleanup.dispose();
+          },
+        };
+      },
+    },
+  ],
 });
 
+await server.start();
 
-const { url } = await startStandaloneServer(server, {
-  listen: { port: 4000 },
+app.use('/graphql', cors<cors.CorsRequest>(), bodyParser.json(), expressMiddleware(server, {
   context: async ({ req }) => {
     const { cache } = server;
     const token = req.headers.authorization || '';
 
-
     if (token) {
       try {
-        const decoded = jwt.verify(token, SECRET_KEY);
+        const decoded = jwt.verify(token, process.env.SECRET_KEY);
         const user = users.find(user => user.id === decoded.userId);
 
         return {
@@ -255,7 +95,10 @@ const { url } = await startStandaloneServer(server, {
     }
 
   },
+}));
+
+// Now that our HTTP server is fully set up, actually listen.
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Query endpoint ready at http://localhost:${PORT}/graphql`);
+  console.log(`🚀 Subscription endpoint ready at ws://localhost:${PORT}/graphql`);
 });
-
-console.log(`🚀  Server ready at: ${url}`);
-
